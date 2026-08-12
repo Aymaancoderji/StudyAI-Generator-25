@@ -1,0 +1,21 @@
+# Secrets — never commit
+.env
+.env.local
+*.key
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Project data
+data/uploads/
+data/decks/*.csv
+data/decks/*.parquet
+!data/samples/

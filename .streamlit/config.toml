@@ -1,0 +1,44 @@
+# Custom theme — warm "index card" palette, deliberately not the default
+# Streamlit purple/red. See app.py for the matching font + chrome CSS.
+
+[client]
+toolbarMode = "minimal"
+showSidebarNavigation = true
+
+[theme]
+base = "light"
+primaryColor = "#1F6F5C"
+backgroundColor = "#FAF7F0"
+secondaryBackgroundColor = "#F1EAD9"
+textColor = "#20241F"
+borderColor = "#E1D7BE"
+linkColor = "#1F6F5C"
+linkUnderline = false
+baseRadius = "0.75rem"
+buttonRadius = "0.75rem"
+showWidgetBorder = true
+showSidebarBorder = false
+dataframeBorderColor = "#E1D7BE"
+dataframeHeaderBackgroundColor = "#F1EAD9"
+codeBackgroundColor = "#F1EAD9"
+
+[theme.sidebar]
+backgroundColor = "#F1EAD9"
+secondaryBackgroundColor = "#FAF7F0"
+borderColor = "#E1D7BE"
+
+[theme.dark]
+primaryColor = "#4FBF9F"
+backgroundColor = "#14181A"
+secondaryBackgroundColor = "#1D2422"
+textColor = "#ECE7DA"
+borderColor = "#2B332F"
+linkColor = "#4FBF9F"
+dataframeBorderColor = "#2B332F"
+dataframeHeaderBackgroundColor = "#1D2422"
+codeBackgroundColor = "#1D2422"
+
+[theme.dark.sidebar]
+backgroundColor = "#1D2422"
+secondaryBackgroundColor = "#14181A"
+borderColor = "#2B332F"
