@@ -205,7 +205,18 @@ def main() -> None:
     if document is not None and not card_types:
         st.info("Select at least one card type in the sidebar to generate.")
 
-    if st.button("✨ Generate study cards", type="primary", disabled=generate_disabled):
+    gen_col, reset_col = st.columns([5, 1])
+    generate_clicked = gen_col.button(
+        "✨ Generate study cards", type="primary", disabled=generate_disabled
+    )
+    if reset_col.button(
+        "↺ Start over", disabled="deck_df" not in st.session_state, width="stretch"
+    ):
+        for key in ("deck_df", "clean_stats", "summary", "card_editor"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
+    if generate_clicked:
         chunks = chunk_document(
             document, max_tokens=max_chunk_tokens, min_tokens=DEFAULT_MIN_TOKENS
         )
@@ -307,14 +318,30 @@ def _render_results() -> None:
                 )
 
     if len(deck_df):
-        st.subheader("🗂️ Coverage by topic")
-        st.dataframe(coverage_by_topic(deck_df), hide_index=True, width="stretch")
+        cov_col, dist_col = st.columns([3, 2])
+        with cov_col:
+            st.subheader("🗂️ Coverage by topic")
+            st.dataframe(coverage_by_topic(deck_df), hide_index=True, width="stretch")
+        with dist_col:
+            st.subheader("🎯 Card mix")
+            st.bar_chart(deck_df["card_type"].value_counts(), horizontal=True)
 
     st.subheader("✏️ Review & edit cards")
     st.caption(
         "Edit any cell, or delete a row with the trash icon. Downloads below "
         "reflect your edits."
     )
+    search = st.text_input(
+        "🔎 Preview a keyword search",
+        placeholder="Search questions and answers...",
+        help="Shows a quick read-only match count. Edit and download using the full table below.",
+    )
+    if search:
+        mask = deck_df["question"].str.contains(
+            search, case=False, na=False
+        ) | deck_df["answer"].str.contains(search, case=False, na=False)
+        st.caption(f"{int(mask.sum())} of {len(deck_df)} card(s) match \"{search}\".")
+
     edited_df = st.data_editor(
         deck_df,
         key="card_editor",
