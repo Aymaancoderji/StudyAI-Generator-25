@@ -147,10 +147,11 @@ def main() -> None:
             value=settings.effort if settings.effort in EFFORT_OPTIONS else "medium",
             help="Higher effort costs more tokens but writes better cards.",
         )
+        select_all = st.checkbox("Select all card types", value=False)
         card_types = st.multiselect(
             "Card types to generate",
             options=list(ALL_CARD_TYPES),
-            default=list(DEFAULT_CARD_TYPES),
+            default=list(ALL_CARD_TYPES) if select_all else list(DEFAULT_CARD_TYPES),
         )
         count_per_chunk = st.slider("Cards per chunk", min_value=3, max_value=15, value=8)
         max_chunk_tokens = st.slider(
@@ -318,13 +319,26 @@ def _render_results() -> None:
                 )
 
     if len(deck_df):
-        cov_col, dist_col = st.columns([3, 2])
+        cov_col, mix_col, diff_col = st.columns([3, 2, 2])
         with cov_col:
             st.subheader("🗂️ Coverage by topic")
             st.dataframe(coverage_by_topic(deck_df), hide_index=True, width="stretch")
-        with dist_col:
+        with mix_col:
             st.subheader("🎯 Card mix")
             st.bar_chart(deck_df["card_type"].value_counts(), horizontal=True)
+        with diff_col:
+            st.subheader("📈 Difficulty mix")
+            st.bar_chart(
+                deck_df["difficulty"].value_counts().reindex(
+                    list(ALL_DIFFICULTIES), fill_value=0
+                ),
+                horizontal=True,
+            )
+    else:
+        st.warning(
+            "Every generated card was dropped as a duplicate or too low-quality. "
+            "Try loosening the cleanup settings in the sidebar and regenerating."
+        )
 
     st.subheader("✏️ Review & edit cards")
     st.caption(
@@ -334,13 +348,20 @@ def _render_results() -> None:
     search = st.text_input(
         "🔎 Preview a keyword search",
         placeholder="Search questions and answers...",
-        help="Shows a quick read-only match count. Edit and download using the full table below.",
+        help="Shows matching rows here. Edit and download using the full table below.",
     )
     if search:
         mask = deck_df["question"].str.contains(
             search, case=False, na=False
         ) | deck_df["answer"].str.contains(search, case=False, na=False)
-        st.caption(f"{int(mask.sum())} of {len(deck_df)} card(s) match \"{search}\".")
+        matches = deck_df[mask]
+        st.caption(f"{len(matches)} of {len(deck_df)} card(s) match \"{search}\".")
+        if len(matches):
+            st.dataframe(
+                matches[["question", "answer", "topic", "card_type"]],
+                hide_index=True,
+                width="stretch",
+            )
 
     edited_df = st.data_editor(
         deck_df,
@@ -379,6 +400,7 @@ def _render_downloads(edited_df) -> None:
         return
 
     st.subheader("⬇️ Download")
+    st.caption(f"{len(cards)} card(s) ready to export.")
     col1, col2, col3 = st.columns(3)
     col1.download_button(
         "📇 Anki (.csv)",
