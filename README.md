@@ -66,6 +66,13 @@ file → ingest → chunk → [Claude, structured outputs] → cards → Pandas 
    configure generation and cleanup settings in the sidebar, watch live
    progress, review/edit every card in an editable table, download.
 
+7. **`srs.py`** — SM-2 spaced-repetition scheduling. The Study tab in the
+   app reviews due cards one at a time (front, then back, then an
+   Again/Hard/Good/Easy rating) and reschedules each card's next-due date
+   accordingly. Progress lives in the deck itself, so downloading with
+   **💾 Save deck (with progress)** and re-uploading it later via **📥 Resume
+   a saved deck** picks the review schedule back up where it left off.
+
 ## Project layout
 
 ```
@@ -75,7 +82,8 @@ studycards/
 ├── chunk.py       Token-bounded, semantic-boundary chunking
 ├── schema.py      Card / CardBatch — the structured-output schema
 ├── generate.py    Card generation via client.messages.parse
-├── deck.py        Card <-> DataFrame, dedup, quality filters, coverage
+├── deck.py        Card <-> DataFrame, dedup, quality filters, coverage, SRS state
+├── srs.py         SM-2 spaced-repetition scheduling
 └── export.py      Anki CSV / Quizlet TSV / JSON
 
 app.py             Streamlit UI
@@ -134,8 +142,6 @@ Both can also be changed per-run from the Streamlit sidebar without touching
   the model labels the same concept differently across two chunks (e.g.
   "ATP" vs. "Adenosine Triphosphate"), the near-duplicate won't be caught.
 - Single-file upload only; no batch/multi-document runs yet.
-- No spaced-repetition review mode yet (SM-2 scheduling was scoped as a
-  stretch goal — see the original project plan).
 
 ## License
 

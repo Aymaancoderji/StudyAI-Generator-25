@@ -10,6 +10,7 @@ from __future__ import annotations
 import difflib
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Sequence
 
@@ -17,6 +18,7 @@ import pandas as pd
 
 from .generate import DeckGenerationSummary
 from .schema import Card
+from .srs import ReviewState, Rating, schedule
 
 CARD_COLUMNS = [
     "id",
@@ -27,6 +29,17 @@ CARD_COLUMNS = [
     "topic",
     "source_excerpt",
     "chunk_index",
+]
+
+# Spaced-repetition state, attached separately from CARD_COLUMNS so a deck
+# loaded from an older export (no SRS columns) still round-trips cleanly —
+# `attach_review_state` backfills them with fresh defaults.
+SRS_COLUMNS = [
+    "repetitions",
+    "ease_factor",
+    "interval_days",
+    "due_date",
+    "last_reviewed",
 ]
 
 DEFAULT_DUPLICATE_THRESHOLD = 0.85
@@ -272,6 +285,93 @@ def coverage_by_topic(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------
+# Spaced repetition (SM-2)
+# --------------------------------------------------------------------------
+
+
+def attach_review_state(df: pd.DataFrame) -> pd.DataFrame:
+    """Add fresh SM-2 columns to a deck DataFrame, if it doesn't already have
+    them. Idempotent and safe to call on a deck loaded from an export that
+    predates the review feature, or one that already has the columns."""
+    df = df.copy()
+    for col in SRS_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    df["repetitions"] = df["repetitions"].fillna(0).astype(int)
+    df["ease_factor"] = df["ease_factor"].fillna(ReviewState().ease_factor).astype(
+        float
+    )
+    df["interval_days"] = df["interval_days"].fillna(0).astype(int)
+    return df
+
+
+def _row_review_state(row) -> ReviewState:
+    def _parse_date(value):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return None
+        if isinstance(value, date):
+            return value
+        return date.fromisoformat(str(value))
+
+    return ReviewState(
+        repetitions=int(row.repetitions),
+        ease_factor=float(row.ease_factor),
+        interval_days=int(row.interval_days),
+        due_date=_parse_date(row.due_date),
+        last_reviewed=_parse_date(row.last_reviewed),
+    )
+
+
+def due_cards(df: pd.DataFrame, *, as_of: date | None = None) -> pd.DataFrame:
+    """Rows whose card is due for review (never reviewed, or due date has
+    passed), ordered so the longest-overdue/never-seen cards come first."""
+    as_of = as_of or date.today()
+    df = attach_review_state(df)
+    mask = df.apply(lambda row: _row_review_state(row).is_due(as_of), axis=1)
+    due = df[mask].copy()
+    # Rows with no due_date (never reviewed) sort first, then oldest due_date.
+    due["_sort_key"] = due["due_date"].fillna("")
+    due = due.sort_values("_sort_key").drop(columns="_sort_key").reset_index(drop=True)
+    return due
+
+
+def record_review(df: pd.DataFrame, card_id: int, rating: Rating) -> pd.DataFrame:
+    """Apply an SM-2 review to the row with the given `id` and return the
+    updated deck DataFrame (the input is not mutated)."""
+    df = attach_review_state(df)
+    matches = df.index[df["id"] == card_id]
+    if len(matches) == 0:
+        raise KeyError(f"no card with id {card_id}")
+    idx = matches[0]
+
+    state = _row_review_state(df.loc[idx])
+    new_state = schedule(state, rating)
+
+    df.loc[idx, "repetitions"] = new_state.repetitions
+    df.loc[idx, "ease_factor"] = new_state.ease_factor
+    df.loc[idx, "interval_days"] = new_state.interval_days
+    df.loc[idx, "due_date"] = new_state.due_date.isoformat()
+    df.loc[idx, "last_reviewed"] = new_state.last_reviewed.isoformat()
+    return df
+
+
+def review_progress(df: pd.DataFrame, *, as_of: date | None = None) -> dict:
+    """Summary counts for a progress readout: total/new/due/mastered.
+
+    "mastered" is a rough heuristic — reviewed at least 3 times successfully
+    (an SM-2 interval that's grown past the 6-day second step) with more than
+    a week until it's due again.
+    """
+    as_of = as_of or date.today()
+    df = attach_review_state(df)
+    total = len(df)
+    new = int((df["repetitions"] == 0).sum())
+    due = len(due_cards(df, as_of=as_of))
+    mastered = int(((df["repetitions"] >= 3) & (df["interval_days"] > 7)).sum())
+    return {"total": total, "new": new, "due": due, "mastered": mastered}
+
+
+# --------------------------------------------------------------------------
 # Persistence
 # --------------------------------------------------------------------------
 
@@ -362,3 +462,12 @@ class Deck:
 
     def to_parquet(self, path: str | Path) -> None:
         save_parquet(self.df, path)
+
+    def due_cards(self, *, as_of: date | None = None) -> pd.DataFrame:
+        return due_cards(self.df, as_of=as_of)
+
+    def record_review(self, card_id: int, rating: Rating) -> "Deck":
+        return Deck(record_review(self.df, card_id, rating))
+
+    def review_progress(self, *, as_of: date | None = None) -> dict:
+        return review_progress(self.df, as_of=as_of)

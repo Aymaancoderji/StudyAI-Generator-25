@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
 from studycards.deck import (
     Deck,
+    attach_review_state,
     cards_to_dataframe,
     coverage_by_topic,
     dataframe_to_cards,
     deduplicate,
+    due_cards,
     filter_quality,
     find_near_duplicates,
     load_csv,
     load_parquet,
+    record_review,
+    review_progress,
     save_csv,
     save_parquet,
 )
@@ -437,3 +443,97 @@ class TestDeck:
         deck.to_parquet(path)
         restored = Deck.read_parquet(path)
         assert len(restored) == len(deck)
+
+
+# --------------------------------------------------------------------------
+# Spaced repetition (SM-2)
+# --------------------------------------------------------------------------
+
+
+class TestAttachReviewState:
+    def test_adds_srs_columns_with_defaults(self):
+        df = cards_to_dataframe([make_card()])
+        attached = attach_review_state(df)
+        assert list(attached["repetitions"]) == [0]
+        assert attached["ease_factor"].iloc[0] == pytest.approx(2.5)
+        assert list(attached["interval_days"]) == [0]
+        assert attached["due_date"].iloc[0] is None
+
+    def test_is_idempotent(self):
+        df = attach_review_state(cards_to_dataframe([make_card()]))
+        twice = attach_review_state(df)
+        assert list(twice["repetitions"]) == [0]
+
+    def test_does_not_mutate_input(self):
+        df = cards_to_dataframe([make_card()])
+        attach_review_state(df)
+        assert "repetitions" not in df.columns
+
+
+class TestDueCards:
+    def test_never_reviewed_cards_are_due(self):
+        df = cards_to_dataframe([make_card(), make_card(topic="B")])
+        assert len(due_cards(df, as_of=date(2026, 1, 1))) == 2
+
+    def test_future_due_card_is_excluded(self):
+        df = cards_to_dataframe([make_card()])
+        df = record_review(df, card_id=0, rating="easy")
+        # `easy` on a fresh card schedules >= 1 day out from today.
+        far_future = date.today().replace(year=date.today().year + 1)
+        assert len(due_cards(df, as_of=date.today())) == 0
+        assert len(due_cards(df, as_of=far_future)) == 1
+
+    def test_overdue_cards_sort_before_never_reviewed_stays_stable(self):
+        df = cards_to_dataframe([make_card(), make_card(topic="B")])
+        due = due_cards(df, as_of=date(2026, 1, 1))
+        assert set(due["id"]) == {0, 1}
+
+
+class TestRecordReview:
+    def test_updates_the_matching_row_only(self):
+        df = cards_to_dataframe([make_card(), make_card(topic="B")])
+        updated = record_review(df, card_id=0, rating="good")
+        assert updated.loc[updated["id"] == 0, "repetitions"].iloc[0] == 1
+        assert updated.loc[updated["id"] == 1, "repetitions"].iloc[0] == 0
+
+    def test_due_date_is_iso_string(self):
+        df = cards_to_dataframe([make_card()])
+        updated = record_review(df, card_id=0, rating="good")
+        due_date = updated.loc[updated["id"] == 0, "due_date"].iloc[0]
+        assert due_date == date.fromisoformat(due_date).isoformat()
+
+    def test_unknown_card_id_raises(self):
+        df = cards_to_dataframe([make_card()])
+        with pytest.raises(KeyError):
+            record_review(df, card_id=999, rating="good")
+
+    def test_repeated_reviews_accumulate(self):
+        df = cards_to_dataframe([make_card()])
+        df = record_review(df, card_id=0, rating="good")
+        df = record_review(df, card_id=0, rating="good")
+        assert df.loc[df["id"] == 0, "repetitions"].iloc[0] == 2
+
+
+class TestReviewProgress:
+    def test_all_new_before_any_review(self):
+        df = cards_to_dataframe([make_card(), make_card(topic="B")])
+        progress = review_progress(df, as_of=date(2026, 1, 1))
+        assert progress == {"total": 2, "new": 2, "due": 2, "mastered": 0}
+
+    def test_reviewed_card_is_no_longer_new(self):
+        df = cards_to_dataframe([make_card()])
+        df = record_review(df, card_id=0, rating="good")
+        progress = review_progress(df, as_of=date.today())
+        assert progress["new"] == 0
+
+
+class TestDeckReviewMethods:
+    def test_due_cards_and_record_review_delegate(self):
+        deck = Deck.from_cards([make_card()])
+        assert len(deck.due_cards(as_of=date(2026, 1, 1))) == 1
+        reviewed = deck.record_review(0, "good")
+        assert reviewed.df.loc[reviewed.df["id"] == 0, "repetitions"].iloc[0] == 1
+
+    def test_review_progress_delegates(self):
+        deck = Deck.from_cards([make_card()])
+        assert deck.review_progress(as_of=date(2026, 1, 1))["total"] == 1

@@ -6,16 +6,24 @@ Run with: streamlit run app.py
 
 from __future__ import annotations
 
+from datetime import date
+
+import pandas as pd
 import streamlit as st
 
 from studycards.chunk import DEFAULT_MAX_TOKENS, DEFAULT_MIN_TOKENS, chunk_document
 from studycards.config import MissingAPIKeyError, load_settings
 from studycards.deck import (
+    CARD_COLUMNS,
     DEFAULT_DUPLICATE_THRESHOLD,
     DEFAULT_MIN_ANSWER_CHARS,
     Deck,
+    attach_review_state,
     coverage_by_topic,
     dataframe_to_cards,
+    due_cards,
+    record_review,
+    review_progress,
 )
 from studycards.export import to_anki_csv, to_json, to_quizlet_tsv
 from studycards.generate import DEFAULT_CARD_TYPES, generate_deck
@@ -213,9 +221,40 @@ def main() -> None:
     if reset_col.button(
         "↺ Start over", disabled="deck_df" not in st.session_state, width="stretch"
     ):
-        for key in ("deck_df", "clean_stats", "summary", "card_editor"):
+        for key in (
+            "deck_df",
+            "clean_stats",
+            "summary",
+            "card_editor",
+            "review_queue",
+            "review_pos",
+            "review_revealed",
+        ):
             st.session_state.pop(key, None)
         st.rerun()
+
+    with st.expander("📥 Resume a saved deck (with review progress)"):
+        st.caption(
+            "Upload a deck previously downloaded with **💾 Save deck (with "
+            "progress)** below to pick up your spaced-repetition schedule "
+            "where you left off."
+        )
+        resume_file = st.file_uploader(
+            "Deck CSV", type=["csv"], key="resume_uploader", label_visibility="collapsed"
+        )
+        if resume_file is not None and st.button("Load this deck"):
+            resumed_df = attach_review_state(pd.read_csv(resume_file))
+            st.session_state["deck_df"] = resumed_df
+            st.session_state["clean_stats"] = {
+                "duplicates_dropped": 0,
+                "quality_dropped": 0,
+                "dropped_duplicates": resumed_df.iloc[0:0],
+                "dropped_quality": resumed_df.iloc[0:0],
+            }
+            st.session_state["summary"] = None
+            st.session_state.pop("card_editor", None)
+            st.session_state.pop("review_queue", None)
+            st.rerun()
 
     if generate_clicked:
         chunks = chunk_document(
@@ -268,10 +307,11 @@ def main() -> None:
             duplicate_threshold=dedup_threshold, min_answer_chars=min_answer_chars
         )
 
-        st.session_state["deck_df"] = cleaned.df
+        st.session_state["deck_df"] = attach_review_state(cleaned.df)
         st.session_state["clean_stats"] = stats
         st.session_state["summary"] = summary
         st.session_state.pop("card_editor", None)  # reset editor widget state
+        st.session_state.pop("review_queue", None)
 
     if "deck_df" in st.session_state:
         _render_results()
@@ -285,21 +325,22 @@ def _render_results() -> None:
     stats = st.session_state["clean_stats"]
     summary = st.session_state["summary"]
 
-    st.subheader("📊 Generation summary")
-    with st.container(border=True):
-        cols = st.columns(5)
-        cols[0].metric("Cards in deck", len(deck_df))
-        cols[1].metric("Duplicates dropped", stats["duplicates_dropped"])
-        cols[2].metric("Low-quality dropped", stats["quality_dropped"])
-        cols[3].metric("Input tokens", f"{summary.total_input_tokens:,}")
-        cache_pct = (
-            100 * summary.total_cache_read_tokens / summary.total_input_tokens
-            if summary.total_input_tokens
-            else 0
-        )
-        cols[4].metric("Cache hit rate", f"{cache_pct:.0f}%")
+    if summary is not None:
+        st.subheader("📊 Generation summary")
+        with st.container(border=True):
+            cols = st.columns(5)
+            cols[0].metric("Cards in deck", len(deck_df))
+            cols[1].metric("Duplicates dropped", stats["duplicates_dropped"])
+            cols[2].metric("Low-quality dropped", stats["quality_dropped"])
+            cols[3].metric("Input tokens", f"{summary.total_input_tokens:,}")
+            cache_pct = (
+                100 * summary.total_cache_read_tokens / summary.total_input_tokens
+                if summary.total_input_tokens
+                else 0
+            )
+            cols[4].metric("Cache hit rate", f"{cache_pct:.0f}%")
 
-    if summary.errors:
+    if summary is not None and summary.errors:
         with st.expander(f"⚠️ {len(summary.errors)} chunk(s) failed", expanded=False):
             for err in summary.errors:
                 st.write(f"- {err}")
@@ -340,53 +381,59 @@ def _render_results() -> None:
             "Try loosening the cleanup settings in the sidebar and regenerating."
         )
 
-    st.subheader("✏️ Review & edit cards")
-    st.caption(
-        "Edit any cell, or delete a row with the trash icon. Downloads below "
-        "reflect your edits."
-    )
-    search = st.text_input(
-        "🔎 Preview a keyword search",
-        placeholder="Search questions and answers...",
-        help="Shows matching rows here. Edit and download using the full table below.",
-    )
-    if search:
-        mask = deck_df["question"].str.contains(
-            search, case=False, na=False
-        ) | deck_df["answer"].str.contains(search, case=False, na=False)
-        matches = deck_df[mask]
-        st.caption(f"{len(matches)} of {len(deck_df)} card(s) match \"{search}\".")
-        if len(matches):
-            st.dataframe(
-                matches[["question", "answer", "topic", "card_type"]],
-                hide_index=True,
-                width="stretch",
-            )
+    edit_tab, study_tab = st.tabs(["✏️ Review & edit cards", "🧠 Study (spaced repetition)"])
 
-    edited_df = st.data_editor(
-        deck_df,
-        key="card_editor",
-        num_rows="dynamic",
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "id": st.column_config.NumberColumn("ID", disabled=True),
-            "chunk_index": st.column_config.NumberColumn("Chunk", disabled=True),
-            "card_type": st.column_config.SelectboxColumn(
-                "Type", options=list(ALL_CARD_TYPES)
-            ),
-            "difficulty": st.column_config.SelectboxColumn(
-                "Difficulty", options=list(ALL_DIFFICULTIES)
-            ),
-            "question": st.column_config.TextColumn("Question", width="large"),
-            "answer": st.column_config.TextColumn("Answer", width="large"),
-            "source_excerpt": st.column_config.TextColumn(
-                "Source excerpt", width="medium", disabled=True
-            ),
-        },
-    )
+    with edit_tab:
+        st.caption(
+            "Edit any cell, or delete a row with the trash icon. Downloads below "
+            "reflect your edits."
+        )
+        search = st.text_input(
+            "🔎 Preview a keyword search",
+            placeholder="Search questions and answers...",
+            help="Shows matching rows here. Edit and download using the full table below.",
+        )
+        if search:
+            mask = deck_df["question"].str.contains(
+                search, case=False, na=False
+            ) | deck_df["answer"].str.contains(search, case=False, na=False)
+            matches = deck_df[mask]
+            st.caption(f"{len(matches)} of {len(deck_df)} card(s) match \"{search}\".")
+            if len(matches):
+                st.dataframe(
+                    matches[["question", "answer", "topic", "card_type"]],
+                    hide_index=True,
+                    width="stretch",
+                )
 
-    _render_downloads(edited_df)
+        edited_df = st.data_editor(
+            deck_df,
+            key="card_editor",
+            num_rows="dynamic",
+            hide_index=True,
+            width="stretch",
+            column_order=CARD_COLUMNS,  # hides the SRS columns; values round-trip untouched
+            column_config={
+                "id": st.column_config.NumberColumn("ID", disabled=True),
+                "chunk_index": st.column_config.NumberColumn("Chunk", disabled=True),
+                "card_type": st.column_config.SelectboxColumn(
+                    "Type", options=list(ALL_CARD_TYPES)
+                ),
+                "difficulty": st.column_config.SelectboxColumn(
+                    "Difficulty", options=list(ALL_DIFFICULTIES)
+                ),
+                "question": st.column_config.TextColumn("Question", width="large"),
+                "answer": st.column_config.TextColumn("Answer", width="large"),
+                "source_excerpt": st.column_config.TextColumn(
+                    "Source excerpt", width="medium", disabled=True
+                ),
+            },
+        )
+
+        _render_downloads(edited_df)
+
+    with study_tab:
+        _render_study_mode(attach_review_state(edited_df))
 
 
 def _render_downloads(edited_df) -> None:
@@ -423,6 +470,94 @@ def _render_downloads(edited_df) -> None:
         mime="application/json",
         width="stretch",
     )
+
+    st.download_button(
+        "💾 Save deck (with progress)",
+        data=attach_review_state(edited_df).to_csv(index=False),
+        file_name="study_cards_deck.csv",
+        mime="text/csv",
+        width="stretch",
+        help=(
+            "A full snapshot including your spaced-repetition schedule. "
+            "Re-upload it later via 'Resume a saved deck' above to continue "
+            "reviewing where you left off."
+        ),
+    )
+
+
+def _render_study_mode(df) -> None:
+    """The spaced-repetition review flow: one due card at a time, front then
+    back, rated Again/Hard/Good/Easy — an SM-2 review (see `studycards/srs.py`).
+
+    The review queue and per-card SM-2 state both live in `st.session_state`
+    (not in `deck_df` directly) so an edit made in the other tab this same
+    run is picked up on the next rerun without fighting the data editor's own
+    widget state.
+    """
+    today = date.today()
+    progress = review_progress(df, as_of=today)
+
+    cols = st.columns(4)
+    cols[0].metric("Total cards", progress["total"])
+    cols[1].metric("New", progress["new"])
+    cols[2].metric("Due today", progress["due"])
+    cols[3].metric("Mastered", progress["mastered"])
+
+    if progress["total"] == 0:
+        st.info("Generate or load a deck first.")
+        return
+
+    queue = st.session_state.get("review_queue")
+    if not queue:
+        if st.button("▶️ Start review session", type="primary", disabled=progress["due"] == 0):
+            st.session_state["review_queue"] = list(due_cards(df, as_of=today)["id"])
+            st.session_state["review_pos"] = 0
+            st.session_state["review_revealed"] = False
+            st.rerun()
+        if progress["due"] == 0:
+            st.success("Nothing due right now — come back later, or generate more cards.")
+        return
+
+    pos = st.session_state.get("review_pos", 0)
+    if pos >= len(queue):
+        st.success(f"🎉 Session complete — reviewed {len(queue)} card(s).")
+        if st.button("Start another session", disabled=progress["due"] == 0):
+            st.session_state.pop("review_queue", None)
+            st.rerun()
+        return
+
+    card_id = queue[pos]
+    row = df.loc[df["id"] == card_id].iloc[0]
+
+    st.caption(f"Card {pos + 1} of {len(queue)} · topic: {row['topic']}")
+    with st.container(border=True):
+        st.markdown(f"**{row['question']}**")
+        revealed = st.session_state.get("review_revealed", False)
+        if not revealed:
+            if st.button("👁️ Show answer", width="stretch"):
+                st.session_state["review_revealed"] = True
+                st.rerun()
+        else:
+            st.markdown(row["answer"])
+            st.caption(f"_source: {row['source_excerpt']}_")
+
+    if revealed:
+        st.write("How well did you know it?")
+        rate_cols = st.columns(4)
+        ratings = [
+            ("again", "🔴 Again", rate_cols[0]),
+            ("hard", "🟠 Hard", rate_cols[1]),
+            ("good", "🟢 Good", rate_cols[2]),
+            ("easy", "🔵 Easy", rate_cols[3]),
+        ]
+        for rating, label, col in ratings:
+            if col.button(label, key=f"rate_{rating}_{card_id}", width="stretch"):
+                st.session_state["deck_df"] = record_review(
+                    st.session_state["deck_df"], int(card_id), rating
+                )
+                st.session_state["review_pos"] = pos + 1
+                st.session_state["review_revealed"] = False
+                st.rerun()
 
 
 main()

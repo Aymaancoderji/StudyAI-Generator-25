@@ -78,7 +78,8 @@ class TestAppLoads:
 
     def test_file_uploader_present(self):
         at = run_app()
-        assert len(at.get("file_uploader")) == 1
+        # The main notes uploader, plus the "resume a saved deck" CSV uploader.
+        assert len(at.get("file_uploader")) == 2
 
     def test_footer_credit_present(self):
         at = run_app()
@@ -207,7 +208,12 @@ class TestResultsUI:
         at.run(timeout=30)
 
         labels = {b.label for b in at.download_button}
-        assert labels == {"📇 Anki (.csv)", "🎓 Quizlet (.tsv)", "🗄️ JSON"}
+        assert labels == {
+            "📇 Anki (.csv)",
+            "🎓 Quizlet (.tsv)",
+            "🗄️ JSON",
+            "💾 Save deck (with progress)",
+        }
 
     def test_chunk_errors_shown_in_expander(self):
         at = run_app()
@@ -233,3 +239,40 @@ class TestResultsUI:
         at = run_app()
         assert len(at.metric) == 0
         assert len(at.download_button) == 0
+
+
+class TestStudyMode:
+    def test_study_tab_shows_progress_metrics(self):
+        at = run_app()
+        seed_completed_generation(at, [make_card(), make_card(topic="B")], [0, 0])
+        at.run(timeout=30)
+
+        assert not at.exception
+        labels = {m.label for m in at.metric}
+        assert {"Total cards", "New", "Due today", "Mastered"} <= labels
+
+    def test_start_review_reveals_first_card_question(self):
+        at = run_app()
+        seed_completed_generation(at, [make_card()], [0])
+        at.run(timeout=30)
+
+        start_button = next(b for b in at.button if "Start review session" in b.label)
+        start_button.click().run(timeout=30)
+
+        assert not at.exception
+        assert any(make_card().question in m.value for m in at.markdown)
+
+    def test_rating_a_card_advances_and_updates_schedule(self):
+        at = run_app()
+        seed_completed_generation(at, [make_card()], [0])
+        at.run(timeout=30)
+
+        next(b for b in at.button if "Start review session" in b.label).click().run(
+            timeout=30
+        )
+        next(b for b in at.button if "Show answer" in b.label).click().run(timeout=30)
+        next(b for b in at.button if "Good" in b.label).click().run(timeout=30)
+
+        assert not at.exception
+        assert any("Session complete" in s.value for s in at.success)
+        assert at.session_state["deck_df"]["repetitions"].iloc[0] == 1
