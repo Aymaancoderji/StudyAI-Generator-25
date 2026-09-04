@@ -1,6 +1,6 @@
 """AI study card generator — turn lecture notes into reviewable flashcards."""
 
-from .chunk import Chunk, api_token_counter, chunk_document, estimate_tokens
+from .chunk import Chunk, api_token_counter, chunk_document, chunk_documents, estimate_tokens
 from .deck import (
     Deck,
     DedupeResult,
@@ -44,6 +44,7 @@ __all__ = [
     "api_token_counter",
     "cards_to_dataframe",
     "chunk_document",
+    "chunk_documents",
     "coverage_by_topic",
     "dataframe_to_cards",
     "deduplicate",

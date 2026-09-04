@@ -11,7 +11,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from studycards.chunk import DEFAULT_MAX_TOKENS, DEFAULT_MIN_TOKENS, chunk_document
+from studycards.chunk import DEFAULT_MAX_TOKENS, DEFAULT_MIN_TOKENS, chunk_documents
 from studycards.config import MissingAPIKeyError, load_settings
 from studycards.deck import (
     CARD_COLUMNS,
@@ -188,30 +188,42 @@ def main() -> None:
         )
 
     with st.container(border=True):
-        uploaded_file = st.file_uploader(
-            "Upload your notes", type=["pdf", "txt", "md", "markdown"]
+        uploaded_files = st.file_uploader(
+            "Upload your notes",
+            type=["pdf", "txt", "md", "markdown"],
+            accept_multiple_files=True,
+            help="Upload one file, or several — they're generated into a single deck.",
         )
 
-        document = None
-        if uploaded_file is not None:
+        documents = []
+        for uploaded_file in uploaded_files or []:
             try:
-                document = _ingest(uploaded_file.getvalue(), uploaded_file.name)
+                documents.append(_ingest(uploaded_file.getvalue(), uploaded_file.name))
             except UnsupportedFileError as exc:
                 st.error(str(exc))
             except EmptyDocumentError as exc:
                 st.error(str(exc))
 
-        if document is not None:
+        if len(documents) == 1:
+            doc = documents[0]
             st.success(
-                f"Loaded **{document.source}** — {document.page_count} page(s), "
-                f"{document.char_count:,} characters"
+                f"Loaded **{doc.source}** — {doc.page_count} page(s), "
+                f"{doc.char_count:,} characters"
             )
+        elif documents:
+            total_pages = sum(d.page_count for d in documents)
+            total_chars = sum(d.char_count for d in documents)
+            st.success(
+                f"Loaded **{len(documents)} files** — {total_pages} page(s), "
+                f"{total_chars:,} characters total"
+            )
+            st.caption(", ".join(d.source for d in documents))
 
-    if document is None:
+    if not documents:
         _how_it_works()
 
-    generate_disabled = document is None or not has_key or not card_types
-    if document is not None and not card_types:
+    generate_disabled = not documents or not has_key or not card_types
+    if documents and not card_types:
         st.info("Select at least one card type in the sidebar to generate.")
 
     gen_col, reset_col = st.columns([5, 1])
@@ -257,24 +269,28 @@ def main() -> None:
             st.rerun()
 
     if generate_clicked:
-        chunks = chunk_document(
-            document, max_tokens=max_chunk_tokens, min_tokens=DEFAULT_MIN_TOKENS
+        chunks = chunk_documents(
+            documents, max_tokens=max_chunk_tokens, min_tokens=DEFAULT_MIN_TOKENS
         )
+        chunk_documents_map = {c.index: c.source for c in chunks}
         estimated_tokens = sum(c.token_count for c in chunks)
         st.caption(
-            f"Split into {len(chunks)} chunk(s), ~{estimated_tokens:,} estimated "
-            "input tokens (rough offline estimate, not exact)."
+            f"Split into {len(chunks)} chunk(s) across {len(documents)} file(s), "
+            f"~{estimated_tokens:,} estimated input tokens (rough offline estimate, "
+            "not exact)."
         )
 
         with st.status("Generating cards...", expanded=True) as status_box:
             progress_bar = st.progress(0.0)
             log = st.empty()
             lines: list[str] = []
+            multi_file = len(documents) > 1
 
             def on_progress(chunk, summary):
                 progress_bar.progress((chunk.index + 1) / len(chunks))
+                location = f"{chunk.source}, {chunk.page_label}" if multi_file else chunk.page_label
                 lines.append(
-                    f"chunk {chunk.index + 1}/{len(chunks)} ({chunk.page_label}) "
+                    f"chunk {chunk.index + 1}/{len(chunks)} ({location}) "
                     f"→ {len(summary.cards)} cards so far, {len(summary.errors)} error(s)"
                 )
                 log.code("\n".join(lines[-10:]))
@@ -302,7 +318,7 @@ def main() -> None:
                 state="complete",
             )
 
-        raw_deck = Deck.from_summary(summary)
+        raw_deck = Deck.from_summary(summary, chunk_documents=chunk_documents_map)
         cleaned, stats = raw_deck.clean(
             duplicate_threshold=dedup_threshold, min_answer_chars=min_answer_chars
         )
@@ -426,6 +442,9 @@ def _render_results() -> None:
                 "answer": st.column_config.TextColumn("Answer", width="large"),
                 "source_excerpt": st.column_config.TextColumn(
                     "Source excerpt", width="medium", disabled=True
+                ),
+                "document": st.column_config.TextColumn(
+                    "File", width="small", disabled=True
                 ),
             },
         )

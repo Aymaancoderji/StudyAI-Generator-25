@@ -21,8 +21,8 @@ cp .env.example .env
 .venv/bin/streamlit run app.py
 ```
 
-Open the URL Streamlit prints (usually `http://localhost:8501`), upload a
-PDF or Markdown file, and click **Generate study cards**.
+Open the URL Streamlit prints (usually `http://localhost:8501`), upload one
+or more PDF/TXT/Markdown files, and click **Generate study cards**.
 
 ## How it works
 
@@ -62,9 +62,13 @@ file → ingest → chunk → [Claude, structured outputs] → cards → Pandas 
 5. **`export.py`** — serializes the cleaned deck to Anki-importable CSV,
    Quizlet's tab-separated format, or full-fidelity JSON.
 
-6. **`app.py`** — the Streamlit UI wires all of the above together: upload,
-   configure generation and cleanup settings in the sidebar, watch live
-   progress, review/edit every card in an editable table, download.
+6. **`app.py`** — the Streamlit UI wires all of the above together: upload
+   (one file or a batch), configure generation and cleanup settings in the
+   sidebar, watch live progress, review/edit every card in an editable
+   table, download. A batch upload is chunked file-by-file (so page ranges
+   never bleed across documents) and generated as one run into a single
+   deck; each card's `document` column keeps track of which file it came
+   from, and duplicate detection runs across the whole batch, not per-file.
 
 7. **`srs.py`** — SM-2 spaced-repetition scheduling. The Study tab in the
    app reviews due cards one at a time (front, then back, then an
@@ -79,7 +83,7 @@ file → ingest → chunk → [Claude, structured outputs] → cards → Pandas 
 studycards/
 ├── config.py     Loads .env, constructs the shared Anthropic client
 ├── ingest.py      PDF/TXT/MD → normalized text with page attribution
-├── chunk.py       Token-bounded, semantic-boundary chunking
+├── chunk.py       Token-bounded, semantic-boundary chunking (single or multi-doc)
 ├── schema.py      Card / CardBatch — the structured-output schema
 ├── generate.py    Card generation via client.messages.parse
 ├── deck.py        Card <-> DataFrame, dedup, quality filters, coverage, SRS state
@@ -141,7 +145,6 @@ Both can also be changed per-run from the Streamlit sidebar without touching
 - Duplicate detection is scoped to cards sharing the same `topic` label. If
   the model labels the same concept differently across two chunks (e.g.
   "ATP" vs. "Adenosine Triphosphate"), the near-duplicate won't be caught.
-- Single-file upload only; no batch/multi-document runs yet.
 
 ## License
 

@@ -12,8 +12,8 @@ undercounts Claude tokens substantially.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Callable, Iterable
+from dataclasses import dataclass, replace
+from typing import Callable, Iterable, Sequence
 
 from .ingest import Document, Page
 
@@ -47,6 +47,7 @@ class Chunk:
     start_page: int
     end_page: int
     token_count: int
+    source: str = ""  # originating document's filename, set by chunk_documents()
 
     @property
     def page_label(self) -> str:
@@ -118,9 +119,38 @@ def chunk_document(
             start_page=start,
             end_page=end,
             token_count=count(text),
+            source=document.source,
         )
         for i, (text, start, end) in enumerate(chunks)
     ]
+
+
+def chunk_documents(
+    documents: Sequence[Document],
+    *,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    min_tokens: int = DEFAULT_MIN_TOKENS,
+    token_counter: TokenCounter | None = None,
+) -> list[Chunk]:
+    """Chunk multiple documents into one combined, globally-indexed chunk list.
+
+    Each document is chunked independently (so page ranges and boundaries
+    never bleed across files), then the results are concatenated and
+    reindexed so every chunk in the run has a unique `index` — generation and
+    the deck's `chunk_index` column don't need to know multiple files were
+    involved.
+    """
+    all_chunks = [
+        chunk
+        for document in documents
+        for chunk in chunk_document(
+            document,
+            max_tokens=max_tokens,
+            min_tokens=min_tokens,
+            token_counter=token_counter,
+        )
+    ]
+    return [replace(chunk, index=i) for i, chunk in enumerate(all_chunks)]
 
 
 # --------------------------------------------------------------------------

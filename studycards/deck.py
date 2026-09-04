@@ -28,6 +28,7 @@ CARD_COLUMNS = [
     "difficulty",
     "topic",
     "source_excerpt",
+    "document",
     "chunk_index",
 ]
 
@@ -57,10 +58,12 @@ _WS_RE = re.compile(r"\s+")
 def cards_to_dataframe(
     cards: Sequence[Card],
     chunk_indices: Sequence[int | None] | None = None,
+    documents: Sequence[str | None] | None = None,
 ) -> pd.DataFrame:
     """Build the deck DataFrame. `chunk_indices[i]` is the source chunk for
     `cards[i]`, when known — it lets a dropped-duplicate report point back to
-    which page range a card came from."""
+    which page range a card came from. `documents[i]` is the originating
+    filename, when known — relevant once a run spans more than one upload."""
     if chunk_indices is not None and len(chunk_indices) != len(cards):
         raise ValueError(
             f"chunk_indices has {len(chunk_indices)} entries but there are "
@@ -68,6 +71,13 @@ def cards_to_dataframe(
         )
     if chunk_indices is None:
         chunk_indices = [None] * len(cards)
+    if documents is not None and len(documents) != len(cards):
+        raise ValueError(
+            f"documents has {len(documents)} entries but there are "
+            f"{len(cards)} cards"
+        )
+    if documents is None:
+        documents = [None] * len(cards)
 
     rows = [
         {
@@ -78,9 +88,12 @@ def cards_to_dataframe(
             "difficulty": card.difficulty,
             "topic": card.topic,
             "source_excerpt": card.source_excerpt,
+            "document": document,
             "chunk_index": chunk_idx,
         }
-        for i, (card, chunk_idx) in enumerate(zip(cards, chunk_indices))
+        for i, (card, chunk_idx, document) in enumerate(
+            zip(cards, chunk_indices, documents)
+        )
     ]
     return pd.DataFrame(rows, columns=CARD_COLUMNS)
 
@@ -294,6 +307,8 @@ def attach_review_state(df: pd.DataFrame) -> pd.DataFrame:
     them. Idempotent and safe to call on a deck loaded from an export that
     predates the review feature, or one that already has the columns."""
     df = df.copy()
+    if "document" not in df.columns:
+        df["document"] = None
     for col in SRS_COLUMNS:
         if col not in df.columns:
             df[col] = None
@@ -408,19 +423,33 @@ class Deck:
 
     @classmethod
     def from_cards(
-        cls, cards: Sequence[Card], chunk_indices: Sequence[int | None] | None = None
+        cls,
+        cards: Sequence[Card],
+        chunk_indices: Sequence[int | None] | None = None,
+        documents: Sequence[str | None] | None = None,
     ) -> "Deck":
-        return cls(cards_to_dataframe(cards, chunk_indices))
+        return cls(cards_to_dataframe(cards, chunk_indices, documents))
 
     @classmethod
-    def from_summary(cls, summary: DeckGenerationSummary) -> "Deck":
+    def from_summary(
+        cls,
+        summary: DeckGenerationSummary,
+        chunk_documents: dict[int, str] | None = None,
+    ) -> "Deck":
+        """`chunk_documents` maps a chunk's index to its originating filename
+        — pass it (built from the `Chunk`s a multi-file run generated from)
+        to populate the deck's `document` column."""
         cards: list[Card] = []
         chunk_indices: list[int] = []
+        documents: list[str | None] = []
         for result in summary.results:
             for card in result.cards:
                 cards.append(card)
                 chunk_indices.append(result.chunk_index)
-        return cls.from_cards(cards, chunk_indices)
+                documents.append(
+                    (chunk_documents or {}).get(result.chunk_index)
+                )
+        return cls.from_cards(cards, chunk_indices, documents)
 
     @classmethod
     def read_csv(cls, path: str | Path) -> "Deck":
